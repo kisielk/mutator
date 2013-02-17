@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"go/ast"
@@ -86,44 +87,65 @@ func MutatePackage(name, op, rep, out string) error {
 		return fmt.Errorf("could not copy package directory: %s", err)
 	}
 
+	for _, f := range pkg.GoFiles {
+		srcFile := filepath.Join(tmpDir, f)
+		if err := MutateFile(srcFile, op, rep); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func MutateFile(srcFile, op, rep string) error {
 	fset := token.NewFileSet()
 
-	for i, f := range pkg.GoFiles {
-		srcFile := filepath.Join(pkg.Dir, f)
-		file, err := parser.ParseFile(fset, srcFile, nil, parser.ParseComments)
-		if err != nil {
-			return fmt.Errorf("could not parse %s: %s", srcFile, err)
-		}
+	file, err := parser.ParseFile(fset, srcFile, nil, parser.ParseComments)
+	if err != nil {
+		return fmt.Errorf("could not parse %s: %s", srcFile, err)
+	}
 
-		visitor := Visitor{Token: operators[op]}
-		ast.Walk(&visitor, file)
+	visitor := Visitor{Token: operators[op]}
+	ast.Walk(&visitor, file)
 
-		fmt.Fprintf(os.Stderr, "%s has %d occurrences of %s\n", f, len(visitor.Exps), op)
-		path := filepath.Join(tmpDir, filepath.Base(srcFile))
-		for _, exp := range visitor.Exps {
-			func() {
-				oldOp := exp.Op
-				exp.Op = operators[rep]
-				defer func() {
-					exp.Op = oldOp
-				}()
-
-				if err := printAST(path, fset, file); err != nil {
-					Err("%s", err)
-					return
-				}
-
-				cmd := exec.Command("go", "test")
-				cmd.Dir = tmpDir
-				_, err = cmd.CombinedOutput()
-				if err == nil {
-					fmt.Fprintf(os.Stderr, "mutation %d did not fail tests\n", i)
-				}
+	filename := filepath.Base(srcFile)
+	fmt.Fprintf(os.Stderr, "%s has %d occurrences of %s\n", filename, len(visitor.Exps), op)
+	for i, exp := range visitor.Exps {
+		err := func() error {
+			oldOp := exp.Op
+			exp.Op = operators[rep]
+			defer func() {
+				exp.Op = oldOp
 			}()
+
+			if err := printAST(srcFile, fset, file); err != nil {
+				return err
+			}
+
+			cmd := exec.Command("go", "test")
+			cmd.Dir = filepath.Dir(srcFile)
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				fmt.Fprintf(os.Stderr, "mutation %d did not fail tests\n", i)
+			} else if _, ok := err.(*exec.ExitError); ok {
+				lines := bytes.Split(output, []byte("\n"))
+				lastLine := lines[len(lines)-2]
+				if !bytes.HasPrefix(lastLine, []byte("FAIL")) {
+					fmt.Fprintf(os.Stderr, "mutation %d tests resulted in an error: %s\n", i, lastLine)
+				} else {
+					fmt.Fprintf(os.Stderr, "mutation %d tests failed as expected\n", i)
+				}
+			} else {
+				return fmt.Errorf("mutation %d failed to run tests: %s\n", i, err)
+			}
+			return nil
+		}()
+		if err != nil {
+			return err
 		}
-		if err := printAST(path, fset, file); err != nil {
-			Errf("%s", err)
-		}
+	}
+
+	if err := printAST(srcFile, fset, file); err != nil {
+		return err
 	}
 	return nil
 }
