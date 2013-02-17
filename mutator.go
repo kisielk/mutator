@@ -89,7 +89,7 @@ func main() {
 			defer out.Close()
 
 			oldOp := exp.Op
-			exp.Op = operators[*op]
+			exp.Op = operators[*rep]
 			printer.Fprint(out, fset, file)
 			exp.Op = oldOp
 		}()
