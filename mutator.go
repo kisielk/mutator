@@ -4,10 +4,13 @@ import (
 	"flag"
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/printer"
 	"go/token"
+	"io/ioutil"
 	"os"
+	"os/exec"
 	"path/filepath"
 )
 
@@ -44,7 +47,7 @@ func main() {
 	rep := flag.String("rep", "!=", "replacement operator")
 	outdir := flag.String("o", ".", "output directory")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: mutator [flags] [filename]\n")
+		fmt.Fprintf(os.Stderr, "Usage: mutator [flags] [package]\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -56,42 +59,84 @@ func main() {
 		Errf("%s is not a valid replacement\n", *rep)
 	}
 
-	filename := flag.Arg(0)
-	if filename == "" {
+	pkgPath := flag.Arg(0)
+	if pkgPath == "" {
 		flag.Usage()
-		Errf("must provide a filename\n")
+		Errf("must provide a package\n")
 	}
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, filename, nil, parser.ParseComments)
+
+	if err := MutatePackage(pkgPath, *op, *rep, *outdir); err != nil {
+		Errf("%s", err)
+	}
+}
+
+func MutatePackage(name, op, rep, out string) error {
+	pkg, err := build.Import(name, "", 0)
 	if err != nil {
-		Errf("could not parse %s: %s\n", filename, err)
+		return fmt.Errorf("could not import %s: %s", name, err)
 	}
 
-	visitor := Visitor{Token: operators[*op]}
-	ast.Walk(&visitor, file)
+	tmpDir, err := ioutil.TempDir("", "mutate")
+	if err != nil {
+		return fmt.Errorf("could not create temporary directory: %s", err)
+	}
 
-	fmt.Printf("You have %d occurences of %s\n", len(visitor.Exps), *op)
-	for i, exp := range visitor.Exps {
-		name := filepath.Base(filename)
-		dir := filepath.Join(*outdir, fmt.Sprintf("%s_%d", name, i))
-		if err := os.Mkdir(dir, 0770); err != nil {
-			Err("could not create directory: %s\n", err)
-			continue
+	fmt.Fprintf(os.Stderr, "using %s as a temporary directory\n", tmpDir)
+	if err := copyDir(pkg.Dir, tmpDir); err != nil {
+		return fmt.Errorf("could not copy package directory: %s", err)
+	}
+
+	fset := token.NewFileSet()
+
+	for i, f := range pkg.GoFiles {
+		srcFile := filepath.Join(pkg.Dir, f)
+		file, err := parser.ParseFile(fset, srcFile, nil, parser.ParseComments)
+		if err != nil {
+			return fmt.Errorf("could not parse %s: %s", srcFile, err)
 		}
-		path := filepath.Join(dir, name)
-		fmt.Println(path)
-		func() {
-			out, err := os.Create(path)
-			if err != nil {
-				Err("could not create file: %s\n", err)
-				return
-			}
-			defer out.Close()
 
-			oldOp := exp.Op
-			exp.Op = operators[*rep]
-			printer.Fprint(out, fset, file)
-			exp.Op = oldOp
-		}()
+		visitor := Visitor{Token: operators[op]}
+		ast.Walk(&visitor, file)
+
+		fmt.Fprintf(os.Stderr, "%s has %d occurrences of %s\n", f, len(visitor.Exps), op)
+		path := filepath.Join(tmpDir, filepath.Base(srcFile))
+		for _, exp := range visitor.Exps {
+			func() {
+				oldOp := exp.Op
+				exp.Op = operators[rep]
+				defer func() {
+					exp.Op = oldOp
+				}()
+
+				if err := printAST(path, fset, file); err != nil {
+					Err("%s", err)
+					return
+				}
+
+				cmd := exec.Command("go", "test")
+				cmd.Dir = tmpDir
+				_, err = cmd.CombinedOutput()
+				if err == nil {
+					fmt.Fprintf(os.Stderr, "mutation %d did not fail tests\n", i)
+				}
+			}()
+		}
+		if err := printAST(path, fset, file); err != nil {
+			Errf("%s", err)
+		}
 	}
+	return nil
+}
+
+func printAST(path string, fset *token.FileSet, node interface{}) error {
+	out, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
+	if err != nil {
+		return fmt.Errorf("could not create file: %s", err)
+	}
+	defer out.Close()
+
+	if err := printer.Fprint(out, fset, node); err != nil {
+		return fmt.Errorf("could not print %s: %s", path, err)
+	}
+	return nil
 }
