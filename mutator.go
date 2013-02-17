@@ -66,7 +66,7 @@ func main() {
 	}
 
 	if err := MutatePackage(pkgPath, *op, *rep, *outdir); err != nil {
-		Errf("%s", err)
+		Errf("%s\n", err)
 	}
 }
 
