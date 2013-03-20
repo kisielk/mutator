@@ -15,22 +15,33 @@ import (
 	"path/filepath"
 )
 
-var comparisons = map[token.Token]token.Token{
+var operators = map[token.Token]token.Token{
+	// Comparisons
 	token.EQL: token.NEQ,
 	token.LSS: token.GEQ,
 	token.GTR: token.LEQ,
 	token.NEQ: token.EQL,
 	token.LEQ: token.GTR,
 	token.GEQ: token.LSS,
+
+	// Logical
+	token.LAND: token.LOR,
+	token.LOR:  token.LAND,
+
+	// Arithmetic
+	token.ADD: token.SUB,
+	token.SUB: token.ADD,
+	token.MUL: token.QUO,
+	token.QUO: token.MUL,
 }
 
-type ComparisonVisitor struct {
+type BinaryExprVisitor struct {
 	Exps []*ast.BinaryExpr
 }
 
-func (v *ComparisonVisitor) Visit(node ast.Node) ast.Visitor {
+func (v *BinaryExprVisitor) Visit(node ast.Node) ast.Visitor {
 	if exp, ok := node.(*ast.BinaryExpr); ok {
-		if _, ok := comparisons[exp.Op]; ok {
+		if _, ok := operators[exp.Op]; ok {
 			v.Exps = append(v.Exps, exp)
 		}
 	}
@@ -97,7 +108,7 @@ func MutateFile(srcFile string) error {
 		return fmt.Errorf("could not parse %s: %s", srcFile, err)
 	}
 
-	visitor := ComparisonVisitor{}
+	visitor := BinaryExprVisitor{}
 	ast.Walk(&visitor, file)
 
 	filename := filepath.Base(srcFile)
@@ -105,7 +116,7 @@ func MutateFile(srcFile string) error {
 	for i, exp := range visitor.Exps {
 		err := func() error {
 			oldOp := exp.Op
-			exp.Op = comparisons[exp.Op]
+			exp.Op = operators[exp.Op]
 			defer func() {
 				exp.Op = oldOp
 			}()
