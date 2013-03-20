@@ -33,6 +33,13 @@ var operators = map[token.Token]token.Token{
 	token.SUB: token.ADD,
 	token.MUL: token.QUO,
 	token.QUO: token.MUL,
+
+	// Binary
+	token.AND: token.OR,
+	token.OR:  token.AND,
+	token.XOR: token.AND,
+	token.SHL: token.SHR,
+	token.SHR: token.SHL,
 }
 
 type BinaryExprVisitor struct {
