@@ -15,19 +15,22 @@ import (
 	"path/filepath"
 )
 
-var operators = map[string]token.Token{
-	"==": token.EQL,
-	"!=": token.NEQ,
+var comparisons = map[token.Token]token.Token{
+	token.EQL: token.NEQ,
+	token.LSS: token.GEQ,
+	token.GTR: token.LEQ,
+	token.NEQ: token.EQL,
+	token.LEQ: token.GTR,
+	token.GEQ: token.LSS,
 }
 
-type Visitor struct {
-	Token token.Token
-	Exps  []*ast.BinaryExpr
+type ComparisonVisitor struct {
+	Exps []*ast.BinaryExpr
 }
 
-func (v *Visitor) Visit(node ast.Node) ast.Visitor {
+func (v *ComparisonVisitor) Visit(node ast.Node) ast.Visitor {
 	if exp, ok := node.(*ast.BinaryExpr); ok {
-		if exp.Op == v.Token {
+		if _, ok := comparisons[exp.Op]; ok {
 			v.Exps = append(v.Exps, exp)
 		}
 	}
@@ -44,21 +47,11 @@ func Errf(s string, args ...interface{}) {
 }
 
 func main() {
-	op := flag.String("op", "==", "operator to look for")
-	rep := flag.String("rep", "!=", "replacement operator")
-	outdir := flag.String("o", ".", "output directory")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: mutator [flags] [package]\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
-
-	if _, ok := operators[*op]; !ok {
-		Errf("%s is not a valid mutator\n", *op)
-	}
-	if _, ok := operators[*rep]; !ok {
-		Errf("%s is not a valid replacement\n", *rep)
-	}
 
 	pkgPath := flag.Arg(0)
 	if pkgPath == "" {
@@ -66,12 +59,12 @@ func main() {
 		Errf("must provide a package\n")
 	}
 
-	if err := MutatePackage(pkgPath, *op, *rep, *outdir); err != nil {
+	if err := MutatePackage(pkgPath); err != nil {
 		Errf("%s\n", err)
 	}
 }
 
-func MutatePackage(name, op, rep, out string) error {
+func MutatePackage(name string) error {
 	pkg, err := build.Import(name, "", 0)
 	if err != nil {
 		return fmt.Errorf("could not import %s: %s", name, err)
@@ -89,14 +82,14 @@ func MutatePackage(name, op, rep, out string) error {
 
 	for _, f := range pkg.GoFiles {
 		srcFile := filepath.Join(tmpDir, f)
-		if err := MutateFile(srcFile, op, rep); err != nil {
+		if err := MutateFile(srcFile); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func MutateFile(srcFile, op, rep string) error {
+func MutateFile(srcFile string) error {
 	fset := token.NewFileSet()
 
 	file, err := parser.ParseFile(fset, srcFile, nil, parser.ParseComments)
@@ -104,15 +97,15 @@ func MutateFile(srcFile, op, rep string) error {
 		return fmt.Errorf("could not parse %s: %s", srcFile, err)
 	}
 
-	visitor := Visitor{Token: operators[op]}
+	visitor := ComparisonVisitor{}
 	ast.Walk(&visitor, file)
 
 	filename := filepath.Base(srcFile)
-	fmt.Fprintf(os.Stderr, "%s has %d occurrences of %s\n", filename, len(visitor.Exps), op)
+	fmt.Fprintf(os.Stderr, "%s has %d mutation sites\n", filename, len(visitor.Exps))
 	for i, exp := range visitor.Exps {
 		err := func() error {
 			oldOp := exp.Op
-			exp.Op = operators[rep]
+			exp.Op = comparisons[exp.Op]
 			defer func() {
 				exp.Op = oldOp
 			}()
