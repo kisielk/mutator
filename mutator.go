@@ -13,42 +13,52 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
-var operators = map[token.Token]token.Token{
+type mutation struct {
+	op       token.Token
+	category string
+}
+
+var operators = map[token.Token]mutation{
 	// Comparisons
-	token.EQL: token.NEQ,
-	token.LSS: token.GEQ,
-	token.GTR: token.LEQ,
-	token.NEQ: token.EQL,
-	token.LEQ: token.GTR,
-	token.GEQ: token.LSS,
+	token.EQL: {token.NEQ, "comparison"},
+	token.LSS: {token.GEQ, "comparison"},
+	token.GTR: {token.LEQ, "comparison"},
+	token.NEQ: {token.EQL, "comparison"},
+	token.LEQ: {token.GTR, "comparison"},
+	token.GEQ: {token.LSS, "comparison"},
 
 	// Logical
-	token.LAND: token.LOR,
-	token.LOR:  token.LAND,
+	token.LAND: {token.LOR, "logical"},
+	token.LOR:  {token.LAND, "logical"},
 
 	// Arithmetic
-	token.ADD: token.SUB,
-	token.SUB: token.ADD,
-	token.MUL: token.QUO,
-	token.QUO: token.MUL,
+	token.ADD: {token.SUB, "arithmetic"},
+	token.SUB: {token.ADD, "arithmetic"},
+	token.MUL: {token.QUO, "arithmetic"},
+	token.QUO: {token.MUL, "arithmetic"},
 
 	// Binary
-	token.AND: token.OR,
-	token.OR:  token.AND,
-	token.XOR: token.AND,
-	token.SHL: token.SHR,
-	token.SHR: token.SHL,
+	token.AND: {token.OR, "binary"},
+	token.OR:  {token.AND, "binary"},
+	token.XOR: {token.AND, "binary"},
+	token.SHL: {token.SHR, "binary"},
+	token.SHR: {token.SHL, "binary"},
 }
 
 type BinaryExprVisitor struct {
+	// Categories is a set of operator categories to consider for mutation
+	Categories map[string]bool
+
+	// Exps is a list of binary expressions discovered by the visitor
 	Exps []*ast.BinaryExpr
 }
 
 func (v *BinaryExprVisitor) Visit(node ast.Node) ast.Visitor {
 	if exp, ok := node.(*ast.BinaryExpr); ok {
-		if _, ok := operators[exp.Op]; ok {
+		if _, ok := operators[exp.Op]; ok && v.Categories[operators[exp.Op].category] {
 			v.Exps = append(v.Exps, exp)
 		}
 	}
@@ -66,9 +76,11 @@ func Errf(s string, args ...interface{}) {
 
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: mutator [package] [testflags]\n")
+		fmt.Fprintf(os.Stderr, "Usage: mutator [flags] [package] [testflags]\n")
 		flag.PrintDefaults()
 	}
+	categories := flag.String("categories", "comparison,logical,arithmetic,binary",
+		"A comma-separated list of mutation categories to enable. All categories are enabled by default.")
 	flag.Parse()
 
 	pkgPath := flag.Arg(0)
@@ -82,12 +94,17 @@ func main() {
 		testFlags = flag.Args()[1:]
 	}
 
-	if err := MutatePackage(pkgPath, testFlags); err != nil {
+	enabledCategories := make(map[string]bool)
+	for _, cat := range strings.Split(*categories, ",") {
+		enabledCategories[cat] = true
+	}
+
+	if err := MutatePackage(pkgPath, testFlags, enabledCategories); err != nil {
 		Errf("%s\n", err)
 	}
 }
 
-func MutatePackage(name string, testFlags []string) error {
+func MutatePackage(name string, testFlags []string, enabledCategories map[string]bool) error {
 	pkg, err := build.Import(name, "", 0)
 	if err != nil {
 		return fmt.Errorf("could not import %s: %s", name, err)
@@ -105,14 +122,14 @@ func MutatePackage(name string, testFlags []string) error {
 
 	for _, f := range pkg.GoFiles {
 		srcFile := filepath.Join(tmpDir, f)
-		if err := MutateFile(srcFile, testFlags); err != nil {
+		if err := MutateFile(srcFile, testFlags, enabledCategories); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func MutateFile(srcFile string, testFlags []string) error {
+func MutateFile(srcFile string, testFlags []string, enabledCategories map[string]bool) error {
 	fset := token.NewFileSet()
 
 	file, err := parser.ParseFile(fset, srcFile, nil, parser.ParseComments)
@@ -120,7 +137,7 @@ func MutateFile(srcFile string, testFlags []string) error {
 		return fmt.Errorf("could not parse %s: %s", srcFile, err)
 	}
 
-	visitor := BinaryExprVisitor{}
+	visitor := BinaryExprVisitor{Categories: enabledCategories}
 	ast.Walk(&visitor, file)
 
 	filename := filepath.Base(srcFile)
@@ -128,7 +145,7 @@ func MutateFile(srcFile string, testFlags []string) error {
 	for i, exp := range visitor.Exps {
 		err := func() error {
 			oldOp := exp.Op
-			exp.Op = operators[exp.Op]
+			exp.Op = operators[exp.Op].op
 			defer func() {
 				exp.Op = oldOp
 			}()
