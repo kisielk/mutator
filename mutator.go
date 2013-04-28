@@ -66,7 +66,7 @@ func Errf(s string, args ...interface{}) {
 
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: mutator [flags] [package]\n")
+		fmt.Fprintf(os.Stderr, "Usage: mutator [package] [testflags]\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -77,12 +77,17 @@ func main() {
 		Errf("must provide a package\n")
 	}
 
-	if err := MutatePackage(pkgPath); err != nil {
+	var testFlags []string
+	if flag.NArg() > 1 {
+		testFlags = flag.Args()[1:]
+	}
+
+	if err := MutatePackage(pkgPath, testFlags); err != nil {
 		Errf("%s\n", err)
 	}
 }
 
-func MutatePackage(name string) error {
+func MutatePackage(name string, testFlags []string) error {
 	pkg, err := build.Import(name, "", 0)
 	if err != nil {
 		return fmt.Errorf("could not import %s: %s", name, err)
@@ -100,14 +105,14 @@ func MutatePackage(name string) error {
 
 	for _, f := range pkg.GoFiles {
 		srcFile := filepath.Join(tmpDir, f)
-		if err := MutateFile(srcFile); err != nil {
+		if err := MutateFile(srcFile, testFlags); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func MutateFile(srcFile string) error {
+func MutateFile(srcFile string, testFlags []string) error {
 	fset := token.NewFileSet()
 
 	file, err := parser.ParseFile(fset, srcFile, nil, parser.ParseComments)
@@ -132,7 +137,9 @@ func MutateFile(srcFile string) error {
 				return err
 			}
 
-			cmd := exec.Command("go", "test")
+			args := []string{"test"}
+			args = append(args, testFlags...)
+			cmd := exec.Command("go", args...)
 			cmd.Dir = filepath.Dir(srcFile)
 			output, err := cmd.CombinedOutput()
 			if err == nil {
