@@ -129,6 +129,11 @@ func MutatePackage(name string, testFlags []string, enabledCategories map[string
 	return nil
 }
 
+func MutationID(pos token.Position) string {
+	pos.Filename = filepath.Base(pos.Filename)
+	return pos.String()
+}
+
 func MutateFile(srcFile string, testFlags []string, enabledCategories map[string]bool) error {
 	fset := token.NewFileSet()
 
@@ -142,7 +147,7 @@ func MutateFile(srcFile string, testFlags []string, enabledCategories map[string
 
 	filename := filepath.Base(srcFile)
 	fmt.Fprintf(os.Stderr, "%s has %d mutation sites\n", filename, len(visitor.Exps))
-	for i, exp := range visitor.Exps {
+	for _, exp := range visitor.Exps {
 		err := func() error {
 			oldOp := exp.Op
 			exp.Op = operators[exp.Op].op
@@ -160,17 +165,17 @@ func MutateFile(srcFile string, testFlags []string, enabledCategories map[string
 			cmd.Dir = filepath.Dir(srcFile)
 			output, err := cmd.CombinedOutput()
 			if err == nil {
-				fmt.Fprintf(os.Stderr, "mutation %d did not fail tests\n", i)
+				fmt.Fprintf(os.Stderr, "mutation %s did not fail tests\n", MutationID(fset.Position(exp.OpPos)))
 			} else if _, ok := err.(*exec.ExitError); ok {
 				lines := bytes.Split(output, []byte("\n"))
 				lastLine := lines[len(lines)-2]
 				if !bytes.HasPrefix(lastLine, []byte("FAIL")) {
-					fmt.Fprintf(os.Stderr, "mutation %d tests resulted in an error: %s\n", i, lastLine)
+					fmt.Fprintf(os.Stderr, "mutation %s tests resulted in an error: %s\n", MutationID(fset.Position(exp.OpPos)), lastLine)
 				} else {
-					fmt.Fprintf(os.Stderr, "mutation %d tests failed as expected\n", i)
+					fmt.Fprintf(os.Stderr, "mutation %s tests failed as expected\n", MutationID(fset.Position(exp.OpPos)))
 				}
 			} else {
-				return fmt.Errorf("mutation %d failed to run tests: %s\n", i, err)
+				return fmt.Errorf("mutation %s failed to run tests: %s\n", MutationID(fset.Position(exp.OpPos)), err)
 			}
 			return nil
 		}()
